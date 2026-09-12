@@ -380,9 +380,19 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
     if not passes:
         return header + "📭 Гейм-пассы у пользователя не найдены.", user_id, None
 
+    total = len(passes)
+    # Если пассов много — показываем ближайшие к ожидаемой цене (чтобы влезть в лимит Telegram)
+    MAX_SHOW = 15
+    if expected_price is not None:
+        passes = sorted(
+            passes,
+            key=lambda p: abs((p.get("price") if p.get("price") is not None else 10 ** 9) - expected_price),
+        )
+    shown = passes[:MAX_SHOW]
+
     detected_price = None  # цена пасса, ближайшая к ожидаемой
-    lines = [header + f"🎟 Гейм-пассы ({len(passes)}):"]
-    for p in passes:
+    lines = [header + f"🎟 Гейм-пассы ({total}):"]
+    for p in shown:
         price = p.get("price")
         # цена может отсутствовать в списке — дозапрашиваем
         if price is None:
@@ -411,6 +421,10 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
             f"  💰 Цена: {price_str}\n"
             f"  🔗 https://www.roblox.com/game-pass/{p['id']}"
         )
+
+    if total > MAX_SHOW:
+        lines.append(f"… и ещё {total - MAX_SHOW} пасс(ов) (показаны ближайшие к нужной цене)")
+
     return "\n".join(lines), user_id, detected_price
 
 
@@ -463,6 +477,9 @@ def notify_admin_new_order(message, data):
         f"🎮 Никнейм: {data['nickname']}\n\n"
         f"{gp_text}"
     )
+    # Telegram не принимает сообщения длиннее 4096 символов
+    if len(admin_msg) > 4000:
+        admin_msg = admin_msg[:3950] + "\n\n… (список обрезан, слишком длинный)"
     try:
         bot.send_message(
             ADMIN_ID, admin_msg,
