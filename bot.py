@@ -426,23 +426,47 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
     if expected_price is not None:
         header += f"🎯 Ожидаемая цена пасса: {expected_price} R$ (за {robux_amount} Robux)\n"
 
-    passes, has_public = roblox_get_buyable_gamepasses(user_id)
-    if passes is None:
-        return header + "⚠️ Не удалось получить игры/пассы (проверьте вручную).", user_id, None
-    if not has_public:
+    # Все созданные пассы аккаунта (в т.ч. на приватных играх)
+    all_passes = roblox_get_gamepasses(user_id)
+    if all_passes is None:
+        return header + "⚠️ Не удалось получить гейм-пассы (проверьте вручную).", user_id, None
+    if not all_passes:
         return (
-            header + "🔒 У пользователя НЕТ публичного Place — выкупить пасс НЕЛЬЗЯ.\n"
-            "➡️ Отклоните с причиной «Нет публичного Place».",
-            user_id, None,
-        )
-    if not passes:
-        return (
-            header + "📭 На публичных Place нет активных (on-sale) пассов.\n"
-            "➡️ Все пассы Offsale или пасс не создан.",
+            header + "📭 Гейм-пассы у пользователя не найдены.\n"
+            "➡️ Пасс не создан.",
             user_id, None,
         )
 
-    total = len(passes)  # только выкупаемые (public + on-sale)
+    # Place ID известен только для ПУБЛИЧНЫХ игр — подтягиваем карту pass_id -> place_id (best-effort)
+    place_map = {}
+    try:
+        buyable, _ = roblox_get_buyable_gamepasses(user_id)
+        for bp in (buyable or []):
+            place_map[bp["id"]] = bp.get("place_id")
+    except Exception:
+        pass
+
+    # Оставляем только on-sale (у офсейл-пассов цена отсутствует)
+    passes = []
+    for p in all_passes:
+        price = p.get("price")
+        if price is None:
+            continue  # Offsale — выкупить нельзя
+        passes.append({
+            "id": p["id"],
+            "name": p.get("name", "Без названия"),
+            "price": price,
+            "place_id": place_map.get(p["id"]),
+        })
+
+    if not passes:
+        return (
+            header + "📭 У пользователя нет активных (on-sale) пассов — все Offsale.\n"
+            "➡️ Пасс не выставлен на продажу.",
+            user_id, None,
+        )
+
+    total = len(passes)  # только on-sale пассы
 
     def pass_line(p):
         parts = [f"• {p.get('name', 'Без названия')} — {p.get('price')} R$"]
@@ -454,9 +478,9 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
         parts.append(f"  🔗 https://www.roblox.com/game-pass/{p['id']}")
         return "\n".join(parts)
 
-    # Без ожидаемой цены — просто список выкупаемых пассов
+    # Без ожидаемой цены — просто список on-sale пассов
     if expected_price is None:
-        lines = [header + f"🎟 Выкупаемых пассов ({total}):"]
+        lines = [header + f"🎟 Активных (on-sale) пассов ({total}):"]
         for p in passes[:15]:
             lines.append(pass_line(p))
         if total > 15:
@@ -474,7 +498,7 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
 
     lines = [header]
     if exact:
-        lines.append(f"✅ НАЙДЕН выкупаемый пасс с нужной ценой {expected_price} R$ — {len(exact)} шт.:")
+        lines.append(f"✅ НАЙДЕН пасс с нужной ценой {expected_price} R$ — {len(exact)} шт.:")
         for p in exact[:8]:
             lines.append(pass_line(p))
         if len(exact) > 8:
@@ -486,13 +510,13 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
             for p in near[:5]:
                 lines.append(pass_line(p))
         else:
-            lines.append(f"❌ Выкупаемого пасса с нужной ценой {expected_price} R$ НЕ найдено.")
+            lines.append(f"❌ Пасса с нужной ценой {expected_price} R$ НЕ найдено.")
         if others:
-            lines.append(f"\nБлижайшие по цене (из {total} выкупаемых):")
+            lines.append(f"\nБлижайшие по цене (из {total} on-sale):")
             for p in others[:6]:
                 lines.append(pass_line(p))
 
-    lines.append(f"\n📊 Выкупаемых пассов (public + on-sale): {total}")
+    lines.append(f"\n📊 Активных (on-sale) пассов: {total}")
     return "\n".join(lines), user_id, detected_price
 
 
