@@ -312,7 +312,24 @@ def roblox_get_gamepasses(user_id):
         return None
 
 
-def build_gamepass_report(nickname):
+# Комиссия Roblox: продавец получает 70% от цены гейм-пасса.
+ROBLOX_SELLER_SHARE = 0.70
+
+
+def parse_robux_amount(product):
+    """Пытается вытащить количество Robux из названия товара (первое число)."""
+    m = re.search(r"\d+", product or "")
+    return int(m.group()) if m else None
+
+
+def expected_gamepass_price(robux_amount):
+    """Ожидаемая цена гейм-пасса, чтобы продавец получил robux_amount Robux."""
+    if not robux_amount:
+        return None
+    return round(robux_amount / ROBLOX_SELLER_SHARE)
+
+
+def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
     """Возвращает (текст с инфой по пассам, user_id или None) для уведомления админу."""
     nick = (nickname or "").lstrip('@').strip()
     try:
@@ -324,21 +341,35 @@ def build_gamepass_report(nickname):
         return f"⚠️ Пользователь `{nick}` не найден в Roblox.", None
 
     user_id = user["id"]
-    profile = f"🔗 Профиль: https://www.roblox.com/users/{user_id}/profile\n"
+    header = f"🔗 Профиль: https://www.roblox.com/users/{user_id}/profile\n"
+    if expected_price is not None:
+        header += f"🎯 Ожидаемая цена пасса: {expected_price} R$ (за {robux_amount} Robux)\n"
 
     passes = roblox_get_gamepasses(user_id)
     if passes is None:
-        return profile + "⚠️ Не удалось автоматически получить гейм-пассы (проверьте вручную).", user_id
+        return header + "⚠️ Не удалось автоматически получить гейм-пассы (проверьте вручную).", user_id
     if not passes:
-        return profile + "📭 Гейм-пассы у пользователя не найдены.", user_id
+        return header + "📭 Гейм-пассы у пользователя не найдены.", user_id
 
-    lines = [profile + f"🎟 Гейм-пассы ({len(passes)}):"]
+    lines = [header + f"🎟 Гейм-пассы ({len(passes)}):"]
     for p in passes:
         price = p.get("price")
         # цена может отсутствовать в списке — дозапрашиваем
         if price is None:
             price = roblox_get_gamepass_price(p["id"])
-        price_str = f"{price} R$" if price is not None else "не на продаже/скрыта"
+
+        if price is None:
+            price_str = "не на продаже/скрыта"
+        else:
+            price_str = f"{price} R$"
+            if expected_price is not None:
+                if price == expected_price:
+                    price_str += " ✅ цена верна"
+                elif abs(price - expected_price) <= 1:
+                    price_str += " ⚠️ почти совпадает"
+                else:
+                    price_str += " ❌ не совпадает"
+
         lines.append(
             f"• {p['name']}\n"
             f"  💰 Цена: {price_str}\n"
@@ -378,7 +409,9 @@ def notify_admin_new_order(message, data):
         'fullname': fullname,
     }
 
-    gp_text, _ = build_gamepass_report(data['nickname'])
+    robux_amount = parse_robux_amount(data['product'])
+    exp_price = expected_gamepass_price(robux_amount)
+    gp_text, _ = build_gamepass_report(data['nickname'], expected_price=exp_price, robux_amount=robux_amount)
 
     admin_msg = (
         f"📢 Новая заявка на проверку!\n\n"
