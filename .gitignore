@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.env
+codes.db
+codes.db.bak-
+bot.log
