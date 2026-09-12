@@ -70,37 +70,60 @@ pending_orders = {}
 
 # Текст, отправляемый пользователю при одобрении (✅ Успешно)
 GAMEPASS_OK_TEXT = (
-    "✅ Проверка пройдена!\n\n"
-    "📦 Товар: {product}\n"
-    "🎮 Никнейм: {nickname}\n\n"
-    "💎 Robux будут зачислены после завершения обработки транзакции Roblox.\n"
-    "Спасибо за покупку!"
+    "✅ Гейм Пасс Проверен\n\n"
+    "✅ Транзакция успешно проведена. \n\n"
+    "Проверить транзакцию робуксов можно здесь https://www.roblox.com/transactions \n\n"
+    "Робуксы будут отображаться в строке “Pending Robux “ваше количество»\n\n"
+    "( Транзакция может отображаться с задержкой до 24ч)\n\n"
+    "Робуксы Будут начислены на ваш баланс через 5-7 дней, таковы правила игры.\n\n"
+    "⚠️ Важно , не менять цену Гейм Пасс до зачисления Робуксов!\n\n"
+    "В случае возникновения проблем или вопросов пишите - @vallmanager\n\n"
+    "🛑Важно, после Активации кода товар возврату не Подлежит Попытки оформить возврат "
+    "товара после активации кода рассматриваются как мошеннические действия и могут "
+    "повлечь ответственность в соответствии с действующим законодательством и правилами площадки."
 )
 
-# Готовые причины отклонения (❌ Ошибка). Индекс кнопки -> (краткое, текст пользователю)
+# Готовые причины отклонения (❌ Ошибка). Индекс кнопки -> (краткое, шаблон текста).
+# В шаблонах доступны переменные {expected} (нужная цена) и {actual} (текущая цена).
 GAMEPASS_REASONS = [
     (
-        "Пасс не создан",
-        "❌ Game Pass не найден на вашем аккаунте.\n\n"
-        "Пожалуйста, создайте Game Pass по инструкции и активируйте код заново. "
-        "Если это ошибка — напишите @vallmanager.",
-    ),
-    (
-        "Не убрана галочка Regional Pricing",
-        "❌ У вашего Game Pass не убрана галочка «Enable Regional Pricing».\n\n"
-        "Уберите её в настройках Game Pass и активируйте код заново.\n"
-        "Подробнее: https://telegra.ph/Galochka-Enable-Regional-pricing-09-04",
-    ),
-    (
         "Неверная цена",
-        "❌ Цена вашего Game Pass указана неверно.\n\n"
-        "Проверьте сумму по инструкции и активируйте код заново. "
-        "Если это ошибка — напишите @vallmanager.",
+        "❌ Транзакция не выполнена! \n"
+        "Причина: Не найден Гейм Пасс с ценой {expected} на данном Аккаунте.\n\n"
+        "Из-за Комиссии Игры 30% Цена Гейм Пасс должна быть {expected}! Не {actual}\n\n"
+        "Измените цену на {expected} Робуксов в настройках Гейм Пасс или сделайте новый с Нужной ценой \n"
+        "И активируйте код повторно\n\n"
+        "Или Обратитесь к менеджеру - @vallmanager или @vallmanager1 \n"
+        "Для уточнения и решения.",
     ),
     (
-        "Гейм пасс не на продаже",
-        "❌ Ваш Game Pass не выставлен на продажу (Offsale).\n\n"
-        "Включите продажу (Item for Sale) в настройках Game Pass и активируйте код заново.",
+        "Нет публичного Place",
+        "❌ Гейм Пасс Не проверен\n"
+        "❌ Транзакция не выполнена! \n"
+        "Причина:Не найден Place\n\n"
+        "Place должен быть Публичным! Текущий place Приватный\n\n"
+        "Измените настройки Place сделайте его Публичным и активируйте код повторно\n\n"
+        "Или Обратитесь к менеджеру - @vallmanager или @vallmanager1 \n"
+        "Для уточнения и решения.",
+    ),
+    (
+        "Пасс не создан",
+        "❌ Гейм Пасс Не проверен\n"
+        "❌ Транзакция не выполнена! \n"
+        "Причина: Не найден Гейм Пасс на данном Аккаунте.\n\n"
+        "Создайте Гейм Пасс по инструкции и активируйте код повторно\n\n"
+        "Или Обратитесь к менеджеру - @vallmanager или @vallmanager1 \n"
+        "Для уточнения и решения.",
+    ),
+    (
+        "Не убрана Regional Pricing",
+        "❌ Гейм Пасс Не проверен\n"
+        "❌ Транзакция не выполнена! \n"
+        "Причина: Не убрана галочка Enable Regional Pricing\n\n"
+        "Уберите галочку Enable Regional Pricing в настройках Гейм Пасс и активируйте код повторно\n"
+        "Подробнее: https://telegra.ph/Galochka-Enable-Regional-pricing-09-04\n\n"
+        "Или Обратитесь к менеджеру - @vallmanager или @vallmanager1 \n"
+        "Для уточнения и решения.",
     ),
 ]
 
@@ -332,15 +355,19 @@ def expected_gamepass_price(robux_amount):
 
 
 def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
-    """Возвращает (текст с инфой по пассам, user_id или None) для уведомления админу."""
+    """Возвращает (текст с инфой, user_id или None, фактическая_цена или None).
+
+    Фактическая цена — цена гейм-пасса, ближайшего к ожидаемой (лучшая догадка о
+    том, какую цену выставил пользователь) — подставляется в {actual} шаблона ошибки.
+    """
     nick = (nickname or "").lstrip('@').strip()
     try:
         user = roblox_get_user(nick)
     except Exception as e:
-        return f"⚠️ Не удалось найти пользователя `{nick}`: {e}", None
+        return f"⚠️ Не удалось найти пользователя `{nick}`: {e}", None, None
 
     if not user:
-        return f"⚠️ Пользователь `{nick}` не найден в Roblox.", None
+        return f"⚠️ Пользователь `{nick}` не найден в Roblox.", None, None
 
     user_id = user["id"]
     header = f"🔗 Профиль: https://www.roblox.com/users/{user_id}/profile\n"
@@ -349,10 +376,11 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
 
     passes = roblox_get_gamepasses(user_id)
     if passes is None:
-        return header + "⚠️ Не удалось автоматически получить гейм-пассы (проверьте вручную).", user_id
+        return header + "⚠️ Не удалось автоматически получить гейм-пассы (проверьте вручную).", user_id, None
     if not passes:
-        return header + "📭 Гейм-пассы у пользователя не найдены.", user_id
+        return header + "📭 Гейм-пассы у пользователя не найдены.", user_id, None
 
+    detected_price = None  # цена пасса, ближайшая к ожидаемой
     lines = [header + f"🎟 Гейм-пассы ({len(passes)}):"]
     for p in passes:
         price = p.get("price")
@@ -371,13 +399,19 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
                     price_str += " ⚠️ почти совпадает"
                 else:
                     price_str += " ❌ не совпадает"
+            # запоминаем цену, ближайшую к ожидаемой (или первую известную)
+            if expected_price is None:
+                if detected_price is None:
+                    detected_price = price
+            elif detected_price is None or abs(price - expected_price) < abs(detected_price - expected_price):
+                detected_price = price
 
         lines.append(
             f"• {p['name']}\n"
             f"  💰 Цена: {price_str}\n"
             f"  🔗 https://www.roblox.com/game-pass/{p['id']}"
         )
-    return "\n".join(lines), user_id
+    return "\n".join(lines), user_id, detected_price
 
 
 def build_admin_order_keyboard(uid):
@@ -403,17 +437,21 @@ def notify_admin_new_order(message, data):
     username = f"@{message.from_user.username}" if message.from_user.username else "—"
     fullname = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
 
+    robux_amount = parse_robux_amount(data['product'])
+    exp_price = expected_gamepass_price(robux_amount)
+    gp_text, _, actual_price = build_gamepass_report(
+        data['nickname'], expected_price=exp_price, robux_amount=robux_amount
+    )
+
     pending_orders[uid] = {
         'nickname': data['nickname'],
         'product': data['product'],
         'code': data['code'],
         'username': username,
         'fullname': fullname,
+        'expected_price': exp_price,
+        'actual_price': actual_price,
     }
-
-    robux_amount = parse_robux_amount(data['product'])
-    exp_price = expected_gamepass_price(robux_amount)
-    gp_text, _ = build_gamepass_report(data['nickname'], expected_price=exp_price, robux_amount=robux_amount)
 
     admin_msg = (
         f"📢 Новая заявка на проверку!\n\n"
@@ -1022,12 +1060,8 @@ def gamepass_decision_handler(call):
 
         if action == "gp_ok":
             uid = int(parts[1])
-            order = pending_orders.get(uid, {})
             try:
-                bot.send_message(uid, GAMEPASS_OK_TEXT.format(
-                    product=order.get('product', ''),
-                    nickname=order.get('nickname', ''),
-                ))
+                bot.send_message(uid, GAMEPASS_OK_TEXT, disable_web_page_preview=True)
             except Exception as e:
                 bot.answer_callback_query(call.id, f"Не отправлено пользователю: {e}")
                 return
@@ -1043,8 +1077,16 @@ def gamepass_decision_handler(call):
         if action == "gp_r":
             idx = int(parts[1])
             uid = int(parts[2])
-            short, user_text = GAMEPASS_REASONS[idx]
+            short, template = GAMEPASS_REASONS[idx]
             order = pending_orders.get(uid, {})
+
+            # Подставляем нужную и фактическую цену (для причины «Неверная цена»)
+            expected = order.get('expected_price')
+            actual = order.get('actual_price')
+            user_text = template.format(
+                expected=expected if expected is not None else "нужную",
+                actual=actual if actual is not None else "—",
+            )
 
             # Возвращаем код в свободные, чтобы пользователь мог повторить активацию
             code = order.get('code')
@@ -1053,7 +1095,7 @@ def gamepass_decision_handler(call):
                 conn.commit()
 
             try:
-                bot.send_message(uid, user_text)
+                bot.send_message(uid, user_text, disable_web_page_preview=True)
             except Exception as e:
                 bot.answer_callback_query(call.id, f"Не отправлено пользователю: {e}")
                 return
