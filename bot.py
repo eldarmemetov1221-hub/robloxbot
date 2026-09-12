@@ -64,6 +64,46 @@ user_data = {}
 PAYMENT_TIMEOUT = 15 * 60  # 15 минут на оплату
 payment_timers = {}
 
+# Заявки на проверку гейм-пасса, ожидающие решения админа.
+# Ключ — user_id покупателя, значение — данные заказа (ник, товар, код и т.д.)
+pending_orders = {}
+
+# Текст, отправляемый пользователю при одобрении (✅ Успешно)
+GAMEPASS_OK_TEXT = (
+    "✅ Проверка пройдена!\n\n"
+    "📦 Товар: {product}\n"
+    "🎮 Никнейм: {nickname}\n\n"
+    "💎 Robux будут зачислены после завершения обработки транзакции Roblox.\n"
+    "Спасибо за покупку!"
+)
+
+# Готовые причины отклонения (❌ Ошибка). Индекс кнопки -> (краткое, текст пользователю)
+GAMEPASS_REASONS = [
+    (
+        "Пасс не создан",
+        "❌ Game Pass не найден на вашем аккаунте.\n\n"
+        "Пожалуйста, создайте Game Pass по инструкции и активируйте код заново. "
+        "Если это ошибка — напишите @vallmanager.",
+    ),
+    (
+        "Не убрана галочка Regional Pricing",
+        "❌ У вашего Game Pass не убрана галочка «Enable Regional Pricing».\n\n"
+        "Уберите её в настройках Game Pass и активируйте код заново.\n"
+        "Подробнее: https://telegra.ph/Galochka-Enable-Regional-pricing-09-04",
+    ),
+    (
+        "Неверная цена",
+        "❌ Цена вашего Game Pass указана неверно.\n\n"
+        "Проверьте сумму по инструкции и активируйте код заново. "
+        "Если это ошибка — напишите @vallmanager.",
+    ),
+    (
+        "Гейм пасс не на продаже",
+        "❌ Ваш Game Pass не выставлен на продажу (Offsale).\n\n"
+        "Включите продажу (Item for Sale) в настройках Game Pass и активируйте код заново.",
+    ),
+]
+
 
 # ---------- Генерация кода ----------
 def generate_code():
@@ -215,6 +255,149 @@ def roblox_get_inventory_places(user_id):
         if not cur:
             break
     return places
+
+
+def roblox_get_gamepass_price(gamepass_id):
+    """Возвращает цену гейм-пасса в Robux или None, если недоступна/не на продаже."""
+    try:
+        r = requests.get(
+            f"https://apis.roblox.com/game-passes/v1/game-passes/{gamepass_id}/product-info",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        info = r.json()
+        # Возможные варианты формата ответа
+        if info.get("PriceInRobux") is not None:
+            return info.get("PriceInRobux")
+        price_info = info.get("PriceInformation") or {}
+        if price_info.get("DefaultPriceInRobux") is not None:
+            return price_info.get("DefaultPriceInRobux")
+        return info.get("price")
+    except Exception:
+        return None
+
+
+def roblox_get_gamepasses(user_id):
+    """Список гейм-пассов пользователя: [{id, name, price}]. None -> ошибка запроса."""
+    try:
+        result = []
+        cur = None
+        while True:
+            url = f"https://apis.roblox.com/game-passes/v1/users/{user_id}/game-passes?count=100"
+            if cur:
+                url += f"&cursor={cur}"
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            r.raise_for_status()
+            payload = r.json()
+            items = payload.get("gamePasses") or payload.get("data") or []
+            for it in items:
+                gp_id = it.get("gamePassId") or it.get("id")
+                if gp_id is None:
+                    continue
+                price = it.get("price")
+                if price is None:
+                    price = it.get("priceInRobux")
+                result.append({
+                    "id": gp_id,
+                    "name": it.get("name", "Без названия"),
+                    "price": price,
+                })
+            cur = payload.get("nextPageCursor") or payload.get("cursor")
+            if not cur:
+                break
+        return result
+    except Exception:
+        return None
+
+
+def build_gamepass_report(nickname):
+    """Возвращает (текст с инфой по пассам, user_id или None) для уведомления админу."""
+    nick = (nickname or "").lstrip('@').strip()
+    try:
+        user = roblox_get_user(nick)
+    except Exception as e:
+        return f"⚠️ Не удалось найти пользователя `{nick}`: {e}", None
+
+    if not user:
+        return f"⚠️ Пользователь `{nick}` не найден в Roblox.", None
+
+    user_id = user["id"]
+    profile = f"🔗 Профиль: https://www.roblox.com/users/{user_id}/profile\n"
+
+    passes = roblox_get_gamepasses(user_id)
+    if passes is None:
+        return profile + "⚠️ Не удалось автоматически получить гейм-пассы (проверьте вручную).", user_id
+    if not passes:
+        return profile + "📭 Гейм-пассы у пользователя не найдены.", user_id
+
+    lines = [profile + f"🎟 Гейм-пассы ({len(passes)}):"]
+    for p in passes:
+        price = p.get("price")
+        # цена может отсутствовать в списке — дозапрашиваем
+        if price is None:
+            price = roblox_get_gamepass_price(p["id"])
+        price_str = f"{price} R$" if price is not None else "не на продаже/скрыта"
+        lines.append(
+            f"• {p['name']}\n"
+            f"  💰 Цена: {price_str}\n"
+            f"  🔗 https://www.roblox.com/game-pass/{p['id']}"
+        )
+    return "\n".join(lines), user_id
+
+
+def build_admin_order_keyboard(uid):
+    kb = types.InlineKeyboardMarkup()
+    kb.row(
+        types.InlineKeyboardButton("✅ Успешно", callback_data=f"gp_ok:{uid}"),
+        types.InlineKeyboardButton("❌ Ошибка", callback_data=f"gp_err:{uid}"),
+    )
+    return kb
+
+
+def build_reasons_keyboard(uid):
+    kb = types.InlineKeyboardMarkup()
+    for idx, (short, _) in enumerate(GAMEPASS_REASONS):
+        kb.add(types.InlineKeyboardButton(f"❌ {short}", callback_data=f"gp_r:{idx}:{uid}"))
+    kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"gp_back:{uid}"))
+    return kb
+
+
+def notify_admin_new_order(message, data):
+    """Отправляет админу заявку с авто-инфо по гейм-пассам и inline-кнопками."""
+    uid = message.from_user.id
+    username = f"@{message.from_user.username}" if message.from_user.username else "—"
+    fullname = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+
+    pending_orders[uid] = {
+        'nickname': data['nickname'],
+        'product': data['product'],
+        'code': data['code'],
+        'username': username,
+        'fullname': fullname,
+    }
+
+    gp_text, _ = build_gamepass_report(data['nickname'])
+
+    admin_msg = (
+        f"📢 Новая заявка на проверку!\n\n"
+        f"👤 {fullname or '—'}\n"
+        f"💬 Username: {username}\n"
+        f"🆔 ID: {uid}\n\n"
+        f"🔑 Код: {data['code']}\n"
+        f"📦 Товар: {data['product']}\n"
+        f"🎮 Никнейм: {data['nickname']}\n\n"
+        f"{gp_text}"
+    )
+    try:
+        bot.send_message(
+            ADMIN_ID, admin_msg,
+            reply_markup=build_admin_order_keyboard(uid),
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        print("Ошибка отправки заявки админу:", e)
 
 
 def roblox_process_nickname(message, nickname):
@@ -773,6 +956,89 @@ def broadcast(message):
     bot.reply_to(message, f"✅ Рассылка отправлена!\n\n📨 Отправлено: {sent}\n⚠️ Ошибок: {failed}")
 
 
+# ---------- Обработка inline-кнопок проверки гейм-пасса ----------
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("gp_"))
+def gamepass_decision_handler(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Нет доступа.")
+        return
+
+    parts = call.data.split(":")
+    action = parts[0]
+
+    try:
+        if action == "gp_err":
+            uid = int(parts[1])
+            bot.edit_message_reply_markup(
+                call.message.chat.id, call.message.message_id,
+                reply_markup=build_reasons_keyboard(uid),
+            )
+            bot.answer_callback_query(call.id, "Выберите причину отклонения")
+            return
+
+        if action == "gp_back":
+            uid = int(parts[1])
+            bot.edit_message_reply_markup(
+                call.message.chat.id, call.message.message_id,
+                reply_markup=build_admin_order_keyboard(uid),
+            )
+            bot.answer_callback_query(call.id)
+            return
+
+        if action == "gp_ok":
+            uid = int(parts[1])
+            order = pending_orders.get(uid, {})
+            try:
+                bot.send_message(uid, GAMEPASS_OK_TEXT.format(
+                    product=order.get('product', ''),
+                    nickname=order.get('nickname', ''),
+                ))
+            except Exception as e:
+                bot.answer_callback_query(call.id, f"Не отправлено пользователю: {e}")
+                return
+            pending_orders.pop(uid, None)
+            bot.edit_message_text(
+                (call.message.text or "") + "\n\n✅ ОДОБРЕНО — пользователю отправлено уведомление.",
+                call.message.chat.id, call.message.message_id,
+                reply_markup=None, disable_web_page_preview=True,
+            )
+            bot.answer_callback_query(call.id, "✅ Одобрено")
+            return
+
+        if action == "gp_r":
+            idx = int(parts[1])
+            uid = int(parts[2])
+            short, user_text = GAMEPASS_REASONS[idx]
+            order = pending_orders.get(uid, {})
+
+            # Возвращаем код в свободные, чтобы пользователь мог повторить активацию
+            code = order.get('code')
+            if code:
+                cursor.execute("UPDATE codes SET status = 'свободен' WHERE code = ?", (code,))
+                conn.commit()
+
+            try:
+                bot.send_message(uid, user_text)
+            except Exception as e:
+                bot.answer_callback_query(call.id, f"Не отправлено пользователю: {e}")
+                return
+            pending_orders.pop(uid, None)
+            freed = " Код возвращён в свободные." if code else ""
+            bot.edit_message_text(
+                (call.message.text or "") + f"\n\n❌ ОТКЛОНЕНО ({short}).{freed}",
+                call.message.chat.id, call.message.message_id,
+                reply_markup=None, disable_web_page_preview=True,
+            )
+            bot.answer_callback_query(call.id, "❌ Отклонено")
+            return
+
+    except Exception as e:
+        try:
+            bot.answer_callback_query(call.id, f"Ошибка: {e}")
+        except Exception:
+            pass
+
+
 # ---------- Подсказки по кнопкам для админа ----------
 @bot.message_handler(func=lambda message: message.from_user.id == ADMIN_ID)
 def admin_buttons_handler(message):
@@ -958,18 +1224,8 @@ def all_messages_handler(message):
                     reply_markup=markup
                 )
 
-                # Уведомление админу
-                username = f"@{message.from_user.username}" if message.from_user.username else "—"
-                admin_msg = (
-                    f"📢 Активация завершена!\n\n"
-                    f"👤 Пользователь: {message.from_user.first_name or ''} {message.from_user.last_name or ''}\n"
-                    f"💬 Username: {username}\n🆔 ID: {user_id}\n\n"
-                    f"🔑 Код: {data['code']}\n📦 Товар: {data['product']}\n🎮 Никнейм: {data['nickname']}"
-                )
-                try:
-                    bot.send_message(ADMIN_ID, admin_msg)
-                except Exception as e:
-                    print("Ошибка отправки уведомления админу:", e)
+                # Уведомление админу с авто-инфо по пассам и inline-кнопками
+                notify_admin_new_order(message, data)
 
                 user_states.pop(user_id, None)
                 user_data.pop(user_id, None)
