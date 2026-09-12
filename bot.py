@@ -381,50 +381,50 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
         return header + "📭 Гейм-пассы у пользователя не найдены.", user_id, None
 
     total = len(passes)
-    # Если пассов много — показываем ближайшие к ожидаемой цене (чтобы влезть в лимит Telegram)
-    MAX_SHOW = 15
-    if expected_price is not None:
-        passes = sorted(
-            passes,
-            key=lambda p: abs((p.get("price") if p.get("price") is not None else 10 ** 9) - expected_price),
-        )
-    shown = passes[:MAX_SHOW]
 
-    detected_price = None  # цена пасса, ближайшая к ожидаемой
-    lines = [header + f"🎟 Гейм-пассы ({total}):"]
-    for p in shown:
-        price = p.get("price")
-        # цена может отсутствовать в списке — дозапрашиваем
-        if price is None:
-            price = roblox_get_gamepass_price(p["id"])
+    def pass_line(p):
+        pr = p.get("price")
+        price_str = f"{pr} R$" if pr is not None else "Offsale/скрыт"
+        return f"• {p.get('name', 'Без названия')} — {price_str}\n  🔗 https://www.roblox.com/game-pass/{p['id']}"
 
-        if price is None:
-            price_str = "не на продаже/скрыта"
+    # Без ожидаемой цены — просто первые 15 пассов
+    if expected_price is None:
+        lines = [header + f"🎟 Гейм-пассы ({total}):"]
+        for p in passes[:15]:
+            lines.append(pass_line(p))
+        if total > 15:
+            lines.append(f"… и ещё {total - 15} пасс(ов)")
+        detected = next((p.get("price") for p in passes if p.get("price") is not None), None)
+        return "\n".join(lines), user_id, detected
+
+    # Есть ожидаемая цена — «вердикт сверху»
+    exact = [p for p in passes if p.get("price") == expected_price]
+    others = [p for p in passes if p.get("price") != expected_price]
+    others.sort(key=lambda p: abs((p.get("price") if p.get("price") is not None else 10 ** 9) - expected_price))
+
+    # фактическая цена для {actual}: ближайшая известная НЕ равная ожидаемой
+    detected_price = next((p.get("price") for p in others if p.get("price") is not None), None)
+
+    lines = [header]
+    if exact:
+        lines.append(f"✅ НАЙДЕН пасс с нужной ценой {expected_price} R$ — {len(exact)} шт.:")
+        for p in exact[:8]:
+            lines.append(pass_line(p))
+        if len(exact) > 8:
+            lines.append(f"… и ещё {len(exact) - 8} с такой же ценой")
+    else:
+        near = [p for p in others if p.get("price") is not None and abs(p["price"] - expected_price) <= 1]
+        if near:
+            lines.append(f"⚠️ Точного пасса на {expected_price} R$ нет, но есть очень близкие:")
+            for p in near[:5]:
+                lines.append(pass_line(p))
         else:
-            price_str = f"{price} R$"
-            if expected_price is not None:
-                if price == expected_price:
-                    price_str += " ✅ цена верна"
-                elif abs(price - expected_price) <= 1:
-                    price_str += " ⚠️ почти совпадает"
-                else:
-                    price_str += " ❌ не совпадает"
-            # запоминаем цену, ближайшую к ожидаемой (или первую известную)
-            if expected_price is None:
-                if detected_price is None:
-                    detected_price = price
-            elif detected_price is None or abs(price - expected_price) < abs(detected_price - expected_price):
-                detected_price = price
+            lines.append(f"❌ Пасса с нужной ценой {expected_price} R$ НЕ найдено.")
+        lines.append(f"\nБлижайшие по цене (из {total}):")
+        for p in others[:6]:
+            lines.append(pass_line(p))
 
-        lines.append(
-            f"• {p['name']}\n"
-            f"  💰 Цена: {price_str}\n"
-            f"  🔗 https://www.roblox.com/game-pass/{p['id']}"
-        )
-
-    if total > MAX_SHOW:
-        lines.append(f"… и ещё {total - MAX_SHOW} пасс(ов) (показаны ближайшие к нужной цене)")
-
+    lines.append(f"\n📊 Всего пассов у аккаунта: {total}")
     return "\n".join(lines), user_id, detected_price
 
 
