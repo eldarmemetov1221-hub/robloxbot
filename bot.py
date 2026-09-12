@@ -301,6 +301,50 @@ def roblox_get_pass_place_map(user_id):
     return mapping, games_places
 
 
+def roblox_get_universe_passes(universe_id):
+    """Список пассов игры: [{id, name, price}] (price может быть None). None -> ошибка."""
+    try:
+        result, cur = [], None
+        while True:
+            url = f"https://games.roblox.com/v1/games/{universe_id}/game-passes?limit=100&sortOrder=Asc"
+            if cur:
+                url += f"&cursor={cur}"
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            r.raise_for_status()
+            payload = r.json()
+            for gp in payload.get("data", []):
+                result.append({
+                    "id": gp.get("id"),
+                    "name": gp.get("name", "Без названия"),
+                    "price": gp.get("price"),
+                })
+            cur = payload.get("nextPageCursor")
+            if not cur:
+                break
+        return result
+    except Exception:
+        return None
+
+
+def roblox_get_gamepass_info(gamepass_id):
+    """Возвращает (price, is_for_sale) из product-info пасса. (None, None) при ошибке."""
+    try:
+        r = requests.get(
+            f"https://apis.roblox.com/game-passes/v1/game-passes/{gamepass_id}/product-info",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None, None
+        info = r.json()
+        price = info.get("PriceInRobux")
+        if price is None:
+            price = (info.get("PriceInformation") or {}).get("DefaultPriceInRobux")
+        return price, info.get("IsForSale")
+    except Exception:
+        return None, None
+
+
 def roblox_get_buyable_gamepasses(user_id):
     """Пассы, которые реально можно выкупить: на ПУБЛИЧНЫХ Place и ON-SALE.
 
@@ -469,39 +513,62 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
     if expected_price is not None:
         header += f"🎯 Ожидаемая цена пасса: {expected_price} R$ (за {robux_amount} Robux)\n"
 
-    # Все созданные пассы аккаунта (в т.ч. на приватных играх)
-    all_passes = roblox_get_gamepasses(user_id)
-    if all_passes is None:
-        return header + "⚠️ Не удалось получить гейм-пассы (проверьте вручную).", user_id, None
-    if not all_passes:
+    # Надёжный путь: /games -> игры пользователя (в т.ч. 'Publicly unavailable')
+    try:
+        games = roblox_get_games(user_id)
+    except Exception:
+        return header + "⚠️ Не удалось получить игры пользователя (проверьте вручную).", user_id, None
+
+    if not games:
         return (
-            header + "📭 Гейм-пассы у пользователя не найдены.\n"
-            "➡️ Пасс не создан.",
+            header + "📭 У пользователя нет игр/Place.\n"
+            "➡️ Пасс не создан или Place не существует.",
             user_id, None,
         )
 
-    # Карта pass_id -> place_id из /games (для показа Place ID)
-    place_map, games_places = roblox_get_pass_place_map(user_id)
-    # Если игра одна — Place ID можно проставить любому пассу без явной привязки
-    single_place = games_places[0][0] if len(games_places) == 1 else None
+    # Собираем пассы по всем играм; цену уточняем через product-info, если её нет в списке
+    raw = []          # {id, name, price, place_id}
+    places = set()    # уникальные place_id
+    any_pass = False  # были ли вообще пассы (пусть даже offsale)
+    for g in games:
+        universe_id = g.get("id")
+        place_id = (g.get("rootPlace") or {}).get("id")
+        if place_id:
+            places.add(place_id)
+        if not universe_id:
+            continue
+        ups = roblox_get_universe_passes(universe_id)
+        for gp in (ups or []):
+            any_pass = True
+            gid = gp.get("id")
+            price = gp.get("price")
+            if price is None and gid is not None:
+                # уточняем цену/статус продажи (managed pricing и т.п.)
+                info_price, is_sale = roblox_get_gamepass_info(gid)
+                price = info_price if is_sale else None
+            raw.append({
+                "id": gid,
+                "name": gp.get("name", "Без названия"),
+                "price": price,
+                "place_id": place_id,
+            })
 
-    # Оставляем только on-sale (у офсейл-пассов цена отсутствует)
-    passes = []
-    for p in all_passes:
-        price = p.get("price")
-        if price is None:
-            continue  # Offsale — выкупить нельзя
-        passes.append({
-            "id": p["id"],
-            "name": p.get("name", "Без названия"),
-            "price": price,
-            "place_id": place_map.get(p["id"]) or single_place,
-        })
+    single_place = next(iter(places)) if len(places) == 1 else None
+    passes = [p for p in raw if p.get("price") is not None]
+    for p in passes:
+        if not p.get("place_id"):
+            p["place_id"] = single_place
 
+    if not any_pass:
+        return (
+            header + f"📭 Гейм-пассы у пользователя не найдены.\n"
+            f"➡️ Пасс не создан.\n\n📍 Place ID: {single_place or '—'}",
+            user_id, None,
+        )
     if not passes:
         return (
-            header + "📭 У пользователя нет активных (on-sale) пассов — все Offsale.\n"
-            "➡️ Пасс не выставлен на продажу.",
+            header + f"📭 У пользователя нет активных (on-sale) пассов — все Offsale.\n"
+            f"➡️ Пасс не выставлен на продажу.\n\n📍 Place ID: {single_place or '—'}",
             user_id, None,
         )
 
