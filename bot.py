@@ -1117,6 +1117,7 @@ def broadcast(message):
 # ---------- Обработка inline-кнопок проверки гейм-пасса ----------
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("gp_"))
 def gamepass_decision_handler(call):
+    print(f"[callback] получено нажатие: data={call.data} от {call.from_user.id}")
     if call.from_user.id != ADMIN_ID:
         bot.answer_callback_query(call.id, "❌ Нет доступа.")
         return
@@ -1556,4 +1557,9 @@ def all_messages_handler(message):
 # ---------- Запуск ----------
 if __name__ == "__main__":
    print("Бот запущен...")
-   bot.infinity_polling()
+   # Явно включаем приём callback_query (нажатия inline-кнопок), иначе
+   # некоторые конфигурации получают только message-апдейты.
+   bot.infinity_polling(allowed_updates=[
+       "message", "edited_message", "callback_query",
+       "my_chat_member", "chat_member",
+   ])
