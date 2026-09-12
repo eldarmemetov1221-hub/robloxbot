@@ -179,7 +179,7 @@ def roblox_get_user(username):
 
 
 def roblox_get_games(user_id):
-    """Возвращает список игр пользователя Roblox (с пагинацией)."""
+    """Возвращает список опубликованных игр (Experiences) пользователя."""
     games, cur = [], None
     while True:
         url = f"https://games.roblox.com/v2/users/{user_id}/games?sortOrder=Asc&limit=50"
@@ -195,6 +195,28 @@ def roblox_get_games(user_id):
     return games
 
 
+def roblox_get_inventory_places(user_id):
+    """Возвращает Place-ассеты из инвентаря пользователя (тип 9).
+
+    None -> инвентарь скрыт настройками приватности (403).
+    """
+    places, cur = [], None
+    while True:
+        url = f"https://inventory.roblox.com/v2/users/{user_id}/inventory/9?limit=100&sortOrder=Asc"
+        if cur:
+            url += f"&cursor={cur}"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if r.status_code == 403:
+            return None
+        r.raise_for_status()
+        payload = r.json()
+        places.extend(payload.get("data", []))
+        cur = payload.get("nextPageCursor")
+        if not cur:
+            break
+    return places
+
+
 def roblox_process_nickname(message, nickname):
     """Формирует и отправляет отчёт по никнейму: User ID + список Place ID."""
     user_states.pop(message.from_user.id, None)
@@ -207,19 +229,39 @@ def roblox_process_nickname(message, nickname):
                                   message.chat.id, status.message_id)
             return
 
-        games = roblox_get_games(user["id"])
+        user_id = user["id"]
+        games = roblox_get_games(user_id)
+        inv_places = roblox_get_inventory_places(user_id)
+
         text = (
             f"👤 Никнейм: {user.get('name')}\n"
             f"🏷 Имя: {user.get('displayName')}\n"
-            f"🆔 User ID: {user['id']}\n\n"
+            f"🆔 User ID: {user_id}\n"
         )
-        if not games:
-            text += "📭 Публичных игр (Place ID) нет."
-        else:
-            text += f"🎮 Игр: {len(games)}\n\n"
+
+        # Place ID из опубликованных игр (Experiences), чтобы не дублировать в инвентаре
+        game_place_ids = set()
+
+        if games:
+            text += f"\n🎮 Игры (Experiences): {len(games)}\n"
             for g in games:
                 place_id = (g.get("rootPlace") or {}).get("id", "—")
+                if place_id != "—":
+                    game_place_ids.add(place_id)
                 text += f"• {g.get('name', 'Без названия')}\n  🔑 Place ID: {place_id}\n"
+
+        # Place ID из инвентаря (в т.ч. Offsale / неопубликованные)
+        if inv_places is None:
+            text += "\n🔒 Инвентарь скрыт настройками приватности пользователя (Places не проверить)."
+        else:
+            extra = [p for p in inv_places if p.get("assetId") not in game_place_ids]
+            if extra:
+                text += f"\n📁 Места из инвентаря: {len(extra)}\n"
+                for p in extra:
+                    text += f"• {p.get('name', 'Без названия')}\n  🔑 Place ID: {p.get('assetId', '—')}\n"
+
+        if not games and not inv_places:
+            text += "\n📭 Публичных игр и мест (Place ID) не найдено."
 
         try:
             bot.edit_message_text(text, message.chat.id, status.message_id)
