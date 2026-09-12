@@ -278,6 +278,7 @@ def roblox_get_buyable_gamepasses(user_id):
     for g in games:
         universe_id = g.get("id")
         game_name = g.get("name", "")
+        place_id = (g.get("rootPlace") or {}).get("id")
         if universe_id is None:
             continue
         try:
@@ -298,6 +299,7 @@ def roblox_get_buyable_gamepasses(user_id):
                         "name": gp.get("name", "Без названия"),
                         "price": price,
                         "game": game_name,
+                        "place_id": place_id,
                     })
                 cur = payload.get("nextPageCursor")
                 if not cur:
@@ -446,6 +448,9 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
         parts = [f"• {p.get('name', 'Без названия')} — {p.get('price')} R$"]
         if p.get('game'):
             parts.append(f"  🎮 Игра: {p.get('game')}")
+        if p.get('place_id'):
+            parts.append(f"  🆔 Place ID: {p['place_id']}")
+            parts.append(f"  🌐 https://www.roblox.com/games/{p['place_id']}")
         parts.append(f"  🔗 https://www.roblox.com/game-pass/{p['id']}")
         return "\n".join(parts)
 
