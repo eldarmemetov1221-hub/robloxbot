@@ -258,6 +258,49 @@ def roblox_get_games(user_id):
     return games
 
 
+def roblox_get_pass_place_map(user_id):
+    """Карта pass_id -> place_id по всем играм пользователя из /games.
+
+    Без фильтра по цене — нужна только для того, чтобы узнать Place ID пасса.
+    Возвращает dict {gamepass_id: place_id}; games_info {universe_id: (name, place_id)}.
+    """
+    mapping = {}
+    games_places = []  # [(place_id, game_name)]
+    try:
+        games = roblox_get_games(user_id)
+    except Exception:
+        return mapping, games_places
+
+    for g in games or []:
+        universe_id = g.get("id")
+        place_id = (g.get("rootPlace") or {}).get("id")
+        game_name = g.get("name", "")
+        if not universe_id:
+            continue
+        if place_id:
+            games_places.append((place_id, game_name))
+        try:
+            cur = None
+            while True:
+                url = f"https://games.roblox.com/v1/games/{universe_id}/game-passes?limit=100&sortOrder=Asc"
+                if cur:
+                    url += f"&cursor={cur}"
+                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+                r.raise_for_status()
+                payload = r.json()
+                for gp in payload.get("data", []):
+                    gid = gp.get("id")
+                    if gid is not None and place_id:
+                        mapping[gid] = place_id
+                cur = payload.get("nextPageCursor")
+                if not cur:
+                    break
+        except Exception:
+            continue
+
+    return mapping, games_places
+
+
 def roblox_get_buyable_gamepasses(user_id):
     """Пассы, которые реально можно выкупить: на ПУБЛИЧНЫХ Place и ON-SALE.
 
@@ -437,14 +480,10 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
             user_id, None,
         )
 
-    # Place ID известен только для ПУБЛИЧНЫХ игр — подтягиваем карту pass_id -> place_id (best-effort)
-    place_map = {}
-    try:
-        buyable, _ = roblox_get_buyable_gamepasses(user_id)
-        for bp in (buyable or []):
-            place_map[bp["id"]] = bp.get("place_id")
-    except Exception:
-        pass
+    # Карта pass_id -> place_id из /games (для показа Place ID)
+    place_map, games_places = roblox_get_pass_place_map(user_id)
+    # Если игра одна — Place ID можно проставить любому пассу без явной привязки
+    single_place = games_places[0][0] if len(games_places) == 1 else None
 
     # Оставляем только on-sale (у офсейл-пассов цена отсутствует)
     passes = []
@@ -456,7 +495,7 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
             "id": p["id"],
             "name": p.get("name", "Без названия"),
             "price": price,
-            "place_id": place_map.get(p["id"]),
+            "place_id": place_map.get(p["id"]) or single_place,
         })
 
     if not passes:
