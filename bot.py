@@ -3,6 +3,7 @@ import re
 import random
 import string
 import sqlite3
+import requests
 from dotenv import load_dotenv
 import telebot
 from telebot import types
@@ -120,6 +121,8 @@ def send_admin_menu(chat_id):
         types.KeyboardButton("/msg")
     )
 
+    # Roblox: никнейм -> Place ID
+    markup.add(types.KeyboardButton("🎮 Roblox Place ID"))
 
     # Отдельно кнопка закрытия меню
     markup.add(types.KeyboardButton("Закрыть меню"))
@@ -160,6 +163,85 @@ def new_code(message):
        bot.reply_to(message, f"✅ Код создан:\n🔑 `{code}`\n📦 {product}", parse_mode='Markdown')
    except sqlite3.IntegrityError:
        bot.reply_to(message, "⚠️ Такой код уже существует. Повтори попытку.")
+
+# ---------- Roblox: никнейм -> Place ID ----------
+def roblox_get_user(username):
+    """Резолвит никнейм Roblox в {id, name, displayName} или None."""
+    r = requests.post(
+        "https://users.roblox.com/v1/usernames/users",
+        json={"usernames": [username], "excludeBannedUsers": False},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=15,
+    )
+    r.raise_for_status()
+    data = r.json().get("data", [])
+    return data[0] if data else None
+
+
+def roblox_get_games(user_id):
+    """Возвращает список игр пользователя Roblox (с пагинацией)."""
+    games, cur = [], None
+    while True:
+        url = f"https://games.roblox.com/v2/users/{user_id}/games?sortOrder=Asc&limit=50"
+        if cur:
+            url += f"&cursor={cur}"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        r.raise_for_status()
+        payload = r.json()
+        games.extend(payload.get("data", []))
+        cur = payload.get("nextPageCursor")
+        if not cur:
+            break
+    return games
+
+
+def roblox_process_nickname(message, nickname):
+    """Формирует и отправляет отчёт по никнейму: User ID + список Place ID."""
+    user_states.pop(message.from_user.id, None)
+    nickname = nickname.lstrip('@').strip()
+    status = bot.reply_to(message, f"🔎 Ищу игры пользователя {nickname}...")
+    try:
+        user = roblox_get_user(nickname)
+        if not user:
+            bot.edit_message_text(f"🚫 Пользователь {nickname} не найден в Roblox.",
+                                  message.chat.id, status.message_id)
+            return
+
+        games = roblox_get_games(user["id"])
+        text = (
+            f"👤 Никнейм: {user.get('name')}\n"
+            f"🏷 Имя: {user.get('displayName')}\n"
+            f"🆔 User ID: {user['id']}\n\n"
+        )
+        if not games:
+            text += "📭 Публичных игр (Place ID) нет."
+        else:
+            text += f"🎮 Игр: {len(games)}\n\n"
+            for g in games:
+                place_id = (g.get("rootPlace") or {}).get("id", "—")
+                text += f"• {g.get('name', 'Без названия')}\n  🔑 Place ID: {place_id}\n"
+
+        try:
+            bot.edit_message_text(text, message.chat.id, status.message_id)
+        except Exception:
+            bot.send_message(message.chat.id, text)
+    except Exception as e:
+        bot.edit_message_text(f"❌ Ошибка при запросе к Roblox: {e}",
+                              message.chat.id, status.message_id)
+
+
+@bot.message_handler(commands=['roblox'])
+def roblox_command(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ Нет доступа.")
+        return
+    nickname = message.text.replace('/roblox', '', 1).strip()
+    if not nickname:
+        user_states[message.from_user.id] = 'awaiting_roblox_nick'
+        bot.reply_to(message, "🎮 Отправьте никнейм Roblox — пришлю Place ID его игр.")
+        return
+    roblox_process_nickname(message, nickname)
+
 
 @bot.message_handler(commands=['block'])
 def block_user(message):
@@ -653,6 +735,17 @@ def broadcast(message):
 @bot.message_handler(func=lambda message: message.from_user.id == ADMIN_ID)
 def admin_buttons_handler(message):
    text = message.text
+
+   # Roblox: пошаговый ввод никнейма после нажатия кнопки
+   if user_states.get(message.from_user.id) == 'awaiting_roblox_nick' and text and not text.startswith('/'):
+       roblox_process_nickname(message, text.strip())
+       return
+
+   if text == "🎮 Roblox Place ID":
+       user_states[message.from_user.id] = 'awaiting_roblox_nick'
+       bot.send_message(message.chat.id, "🎮 Отправьте никнейм Roblox — пришлю Place ID его игр.")
+       return
+
    if text == "/new":
        bot.send_message(message.chat.id, "Используйте команду:\n/new <товар> | <инструкция>")
    elif text == "/addbulk":
