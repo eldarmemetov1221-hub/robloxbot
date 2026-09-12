@@ -258,6 +258,56 @@ def roblox_get_games(user_id):
     return games
 
 
+def roblox_get_buyable_gamepasses(user_id):
+    """Пассы, которые реально можно выкупить: на ПУБЛИЧНЫХ Place и ON-SALE.
+
+    Возвращает (passes, has_public_place):
+      passes           — [{id, name, price, game}] только on-sale пассы;
+      has_public_place — есть ли хоть один публичный Experience;
+      (None, None)     — ошибка запроса.
+    """
+    try:
+        games = roblox_get_games(user_id)  # только публичные Experiences
+    except Exception:
+        return None, None
+
+    if not games:
+        return [], False  # публичных Place нет — выкупить пасс нельзя
+
+    result = []
+    for g in games:
+        universe_id = g.get("id")
+        game_name = g.get("name", "")
+        if universe_id is None:
+            continue
+        try:
+            cur = None
+            while True:
+                url = f"https://games.roblox.com/v1/games/{universe_id}/game-passes?limit=100&sortOrder=Asc"
+                if cur:
+                    url += f"&cursor={cur}"
+                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+                r.raise_for_status()
+                payload = r.json()
+                for gp in payload.get("data", []):
+                    price = gp.get("price")
+                    if price is None:
+                        continue  # Offsale — выкупить нельзя, пропускаем
+                    result.append({
+                        "id": gp.get("id"),
+                        "name": gp.get("name", "Без названия"),
+                        "price": price,
+                        "game": game_name,
+                    })
+                cur = payload.get("nextPageCursor")
+                if not cur:
+                    break
+        except Exception:
+            continue
+
+    return result, True
+
+
 def roblox_get_inventory_places(user_id):
     """Возвращает Place-ассеты из инвентаря пользователя (тип 9).
 
@@ -374,57 +424,70 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
     if expected_price is not None:
         header += f"🎯 Ожидаемая цена пасса: {expected_price} R$ (за {robux_amount} Robux)\n"
 
-    passes = roblox_get_gamepasses(user_id)
+    passes, has_public = roblox_get_buyable_gamepasses(user_id)
     if passes is None:
-        return header + "⚠️ Не удалось автоматически получить гейм-пассы (проверьте вручную).", user_id, None
+        return header + "⚠️ Не удалось получить игры/пассы (проверьте вручную).", user_id, None
+    if not has_public:
+        return (
+            header + "🔒 У пользователя НЕТ публичного Place — выкупить пасс НЕЛЬЗЯ.\n"
+            "➡️ Отклоните с причиной «Нет публичного Place».",
+            user_id, None,
+        )
     if not passes:
-        return header + "📭 Гейм-пассы у пользователя не найдены.", user_id, None
+        return (
+            header + "📭 На публичных Place нет активных (on-sale) пассов.\n"
+            "➡️ Все пассы Offsale или пасс не создан.",
+            user_id, None,
+        )
 
-    total = len(passes)
+    total = len(passes)  # только выкупаемые (public + on-sale)
 
     def pass_line(p):
-        pr = p.get("price")
-        price_str = f"{pr} R$" if pr is not None else "Offsale/скрыт"
-        return f"• {p.get('name', 'Без названия')} — {price_str}\n  🔗 https://www.roblox.com/game-pass/{p['id']}"
+        parts = [f"• {p.get('name', 'Без названия')} — {p.get('price')} R$"]
+        if p.get('game'):
+            parts.append(f"  🎮 Игра: {p.get('game')}")
+        parts.append(f"  🔗 https://www.roblox.com/game-pass/{p['id']}")
+        return "\n".join(parts)
 
-    # Без ожидаемой цены — просто первые 15 пассов
+    # Без ожидаемой цены — просто список выкупаемых пассов
     if expected_price is None:
-        lines = [header + f"🎟 Гейм-пассы ({total}):"]
+        lines = [header + f"🎟 Выкупаемых пассов ({total}):"]
         for p in passes[:15]:
             lines.append(pass_line(p))
         if total > 15:
-            lines.append(f"… и ещё {total - 15} пасс(ов)")
-        detected = next((p.get("price") for p in passes if p.get("price") is not None), None)
+            lines.append(f"… и ещё {total - 15}")
+        detected = passes[0].get("price") if passes else None
         return "\n".join(lines), user_id, detected
 
     # Есть ожидаемая цена — «вердикт сверху»
     exact = [p for p in passes if p.get("price") == expected_price]
-    others = [p for p in passes if p.get("price") != expected_price]
-    others.sort(key=lambda p: abs((p.get("price") if p.get("price") is not None else 10 ** 9) - expected_price))
+    others = sorted(passes, key=lambda p: abs(p.get("price") - expected_price))
+    others = [p for p in others if p.get("price") != expected_price]
 
-    # фактическая цена для {actual}: ближайшая известная НЕ равная ожидаемой
-    detected_price = next((p.get("price") for p in others if p.get("price") is not None), None)
+    # фактическая цена для {actual}: ближайшая НЕ равная ожидаемой
+    detected_price = others[0].get("price") if others else None
 
     lines = [header]
     if exact:
-        lines.append(f"✅ НАЙДЕН пасс с нужной ценой {expected_price} R$ — {len(exact)} шт.:")
+        lines.append(f"✅ НАЙДЕН выкупаемый пасс с нужной ценой {expected_price} R$ — {len(exact)} шт.:")
         for p in exact[:8]:
             lines.append(pass_line(p))
         if len(exact) > 8:
             lines.append(f"… и ещё {len(exact) - 8} с такой же ценой")
     else:
-        near = [p for p in others if p.get("price") is not None and abs(p["price"] - expected_price) <= 1]
+        near = [p for p in others if abs(p["price"] - expected_price) <= 1]
         if near:
             lines.append(f"⚠️ Точного пасса на {expected_price} R$ нет, но есть очень близкие:")
             for p in near[:5]:
                 lines.append(pass_line(p))
         else:
-            lines.append(f"❌ Пасса с нужной ценой {expected_price} R$ НЕ найдено.")
-        lines.append(f"\nБлижайшие по цене (из {total}):")
-        for p in others[:6]:
-            lines.append(pass_line(p))
+            lines.append(f"❌ Выкупаемого пасса с нужной ценой {expected_price} R$ НЕ найдено.")
+        if others:
+            lines.append(f"\nБлижайшие по цене (из {total} выкупаемых):")
+            for p in others[:6]:
+                lines.append(pass_line(p))
 
-    lines.append(f"\n📊 Всего пассов у аккаунта: {total}")
+    lines.append(f"\n📊 Выкупаемых пассов (public + on-sale): {total}")
     return "\n".join(lines), user_id, detected_price
 
 
