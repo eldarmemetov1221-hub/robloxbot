@@ -312,10 +312,6 @@ def roblox_get_gamepasses(user_id):
         return None
 
 
-# Комиссия Roblox: продавец получает 70% от цены гейм-пасса.
-ROBLOX_SELLER_SHARE = 0.70
-
-
 def parse_robux_amount(product):
     """Пытается вытащить количество Robux из названия товара (первое число)."""
     m = re.search(r"\d+", product or "")
@@ -323,10 +319,16 @@ def parse_robux_amount(product):
 
 
 def expected_gamepass_price(robux_amount):
-    """Ожидаемая цена гейм-пасса, чтобы продавец получил robux_amount Robux."""
+    """Ожидаемая цена гейм-пасса, чтобы продавец получил robux_amount Robux.
+
+    Roblox берёт 30% комиссии: продавец получает floor(цена * 0.7).
+    Нужна минимальная цена P, при которой floor(P*0.7) >= robux_amount,
+    что равно ceil(10*R/7) = (10*R + 6) // 7 (целочисленно, без ошибок float).
+    Совпадает с таблицей: 100->143, 400->572, 700->1000, 1000->1429.
+    """
     if not robux_amount:
         return None
-    return round(robux_amount / ROBLOX_SELLER_SHARE)
+    return (10 * robux_amount + 6) // 7
 
 
 def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
