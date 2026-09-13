@@ -525,29 +525,24 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
     if expected_price is not None:
         header += f"🎯 Ожидаемая цена пасса: {expected_price} R$ (за {robux_amount} Robux)\n"
 
-    # Собираем пассы из ДВУХ источников и объединяем по id:
-    #   A) apis users endpoint — видит пассы даже на приватных играх;
-    #   B) /games -> per-universe passes — даёт place_id и подхватывает публичные.
-    raw_by_id = {}   # id -> {id, name, price}
-    place_map = {}   # id -> place_id
-    places = set()   # уникальные place_id аккаунта
-
-    # Источник A
-    apis_passes = roblox_get_gamepasses(user_id)
-    apis_ok = apis_passes is not None
-    for p in (apis_passes or []):
-        gid = p.get("id")
-        if gid is None:
-            continue
-        raw_by_id[gid] = {"id": gid, "name": p.get("name", "Без названия"), "price": p.get("price")}
-
-    # Источник B
+    # Вариант 3: автопроверка через /games (публичные игры). Для приватных игр
+    # Roblox не отдаёт пассы — тогда показываем профиль + Place ID для ручной проверки.
     try:
         games = roblox_get_games(user_id)
     except Exception:
         games = None
-    games_ok = games is not None
-    for g in (games or []):
+    if games is None:
+        return header + "⚠️ Не удалось получить данные Roblox (проверьте вручную).", user_id, None
+    if not games:
+        return (
+            header + "📭 У пользователя нет игр/Place.\n➡️ Пасс не создан или Place не существует.",
+            user_id, None,
+        )
+
+    raw_by_id = {}   # id -> {id, name, price}
+    place_map = {}   # id -> place_id
+    places = set()   # уникальные place_id аккаунта
+    for g in games:
         universe_id = g.get("id")
         place_id = (g.get("rootPlace") or {}).get("id")
         if place_id:
@@ -559,15 +554,7 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
             if gid is None:
                 continue
             place_map[gid] = place_id
-            if gid in raw_by_id:
-                if raw_by_id[gid].get("price") is None:
-                    raw_by_id[gid]["price"] = gp.get("price")
-            else:
-                raw_by_id[gid] = {"id": gid, "name": gp.get("name", "Без названия"), "price": gp.get("price")}
-
-    # Если оба источника упали — честно говорим
-    if not apis_ok and not games_ok:
-        return header + "⚠️ Не удалось получить данные Roblox (проверьте вручную).", user_id, None
+            raw_by_id[gid] = {"id": gid, "name": gp.get("name", "Без названия"), "price": gp.get("price")}
 
     single_place = next(iter(places)) if len(places) == 1 else None
 
@@ -577,7 +564,6 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
             info_price, is_sale = roblox_get_gamepass_info(gid)
             p["price"] = info_price if is_sale else None
 
-    any_pass = len(raw_by_id) > 0
     passes = []
     for gid, p in raw_by_id.items():
         if p.get("price") is None:
@@ -589,16 +575,20 @@ def build_gamepass_report(nickname, expected_price=None, robux_amount=None):
             "place_id": place_map.get(gid) or single_place,
         })
 
-    if not any_pass:
+    # Подсказка для ручной проверки (для приватных игр пассы через API не видны)
+    manual_hint = f"\n\n📍 Place ID: {single_place or '—'}"
+    if single_place:
+        manual_hint += f"\n🌐 https://www.roblox.com/games/{single_place}"
+    manual_hint += "\n⚠️ Если игра приватная — пассы через API не видны, проверьте вручную по профилю."
+
+    if not raw_by_id:
         return (
-            header + f"📭 Гейм-пассы у пользователя не найдены.\n"
-            f"➡️ Пасс не создан.\n\n📍 Place ID: {single_place or '—'}",
+            header + "📭 Гейм-пассы не найдены автоматически." + manual_hint,
             user_id, None,
         )
     if not passes:
         return (
-            header + f"📭 У пользователя нет активных (on-sale) пассов — все Offsale.\n"
-            f"➡️ Пасс не выставлен на продажу.\n\n📍 Place ID: {single_place or '—'}",
+            header + "📭 Активных (on-sale) пассов не найдено (все Offsale)." + manual_hint,
             user_id, None,
         )
 
