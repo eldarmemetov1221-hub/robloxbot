@@ -27,6 +27,40 @@ SHOP_URL = os.getenv('SHOP_URL', 'https://historical-occasionally-founder-office
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# ── Режим «переехали»: True = бот заглушён для обычных пользователей ──
+# Админ (ADMIN_ID) продолжает работать как обычно (рассылка, активации и т.д.).
+MOVED = True
+NEW_BOT_URL = "https://t.me/vallshopbot"
+MOVED_TEXT = (
+    '<tg-emoji emoji-id="5341711823160755726">👋</tg-emoji> '
+    "<b>Мы переехали — @VallShopBot</b>\n\n"
+    '<tg-emoji emoji-id="5938437708635443119">🚫</tg-emoji> '
+    "Данный бот не работает.\n\n"
+    '<tg-emoji emoji-id="6028435952299413210">🛒</tg-emoji> '
+    "Все покупки и активации кодов теперь здесь — @VallShopBot\n\n"
+    '<tg-emoji emoji-id="6034831751308644168">🛠</tg-emoji> '
+    "При возникновении проблем пишите — @VallManager"
+)
+
+
+def send_moved(message):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🚀 Переехать", url=NEW_BOT_URL))
+    try:
+        bot.send_message(
+            message.chat.id, MOVED_TEXT, reply_markup=kb,
+            parse_mode="HTML", disable_web_page_preview=True,
+        )
+    except Exception:
+        # Запасной вариант без премиум-эмодзи, если аккаунт бота без Premium.
+        plain = (
+            "👋 Мы переехали — @VallShopBot\n\n"
+            "🚫 Данный бот не работает.\n\n"
+            "🛒 Все покупки и активации кодов теперь здесь — @VallShopBot\n\n"
+            "🛠 При возникновении проблем пишите — @VallManager"
+        )
+        bot.send_message(message.chat.id, plain, reply_markup=kb, disable_web_page_preview=True)
+
 conn = sqlite3.connect('codes.db', check_same_thread=False)
 cursor = conn.cursor()
 
@@ -205,6 +239,8 @@ def send_admin_menu(chat_id):
 # ---------- Команды ----------
 @bot.message_handler(commands=['start'])
 def start_handler(message):
+   if MOVED and message.from_user.id != ADMIN_ID:
+       return send_moved(message)
    send_main_menu(message.chat.id)
 
 @bot.message_handler(commands=['admin'])
@@ -1432,6 +1468,10 @@ def all_messages_handler(message):
     # Сохраняем пользователя в базу, если его ещё нет
     cursor.execute("INSERT OR IGNORE INTO users (id) VALUES (?)", (user_id,))
     conn.commit()
+
+    # 🚚 Режим «переехали»: обычным пользователям — одно сообщение и выход.
+    if MOVED and user_id != ADMIN_ID:
+        return send_moved(message)
         # 🔒 ПРОВЕРКА БЛОКИРОВКИ
     cursor.execute("SELECT reason FROM blocked_users WHERE user_id = ?", (user_id,))
     blocked = cursor.fetchone()
