@@ -1273,6 +1273,38 @@ def broadcast(message):
     bot.reply_to(message, f"✅ Рассылка отправлена!\n\n📨 Отправлено: {sent}\n⚠️ Ошибок: {failed}")
 
 
+# ---------- Рассылка с картинкой: отправь ФОТО с подписью /broadcast ... ----------
+@bot.message_handler(
+    content_types=['photo'],
+    func=lambda m: m.from_user.id == ADMIN_ID
+    and (m.caption or '').strip().startswith('/broadcast'),
+)
+def broadcast_photo(message):
+    data = message.caption.replace('/broadcast', '', 1).strip()
+    parts = [p.strip() for p in data.split('|')]
+    text = parts[0] if parts and parts[0] else None
+
+    reply_markup = None
+    if len(parts) == 3 and parts[1] and parts[2]:
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton(parts[1], url=parts[2]))
+        reply_markup = kb
+
+    file_id = message.photo[-1].file_id
+    cursor.execute("SELECT id FROM users")
+    users = cursor.fetchall()
+
+    sent = failed = 0
+    for (uid,) in users:
+        try:
+            bot.send_photo(uid, file_id, caption=text, reply_markup=reply_markup)
+            sent += 1
+        except Exception:
+            failed += 1
+
+    bot.reply_to(message, f"✅ Рассылка с фото отправлена!\n\n📨 Отправлено: {sent}\n⚠️ Ошибок: {failed}")
+
+
 # ---------- Обработка inline-кнопок проверки гейм-пасса ----------
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("gp_"))
 def gamepass_decision_handler(call):
